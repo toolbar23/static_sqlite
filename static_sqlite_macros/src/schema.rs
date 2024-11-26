@@ -1,7 +1,7 @@
 use proc_macro2::Span;
 use sqlparser::ast::{
     AlterTableOperation, ColumnDef, ColumnOption, Expr, FunctionArg, FunctionArgExpr, Ident,
-    ObjectName, ObjectType, Query, Select, SelectItem, SetExpr, Statement, TableFactor,
+    ObjectName, ObjectType, Query, Select, SelectItem, SetExpr, Statement, TableAlias, TableFactor,
     TableWithJoins, Value,
 };
 use std::collections::HashMap;
@@ -10,13 +10,51 @@ use syn::{Error, Result};
 use crate::SqlExpr;
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
-pub struct Table<'a>(pub &'a ObjectName);
+pub struct Alias<'a> {
+    alias: &'a Ident,
+    table: Table<'a>,
+}
+
+pub type AliasMap<'a> = HashMap<Table<'a>, Alias<'a>>;
+
+#[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
+pub struct Table<'a> {
+    pub name: &'a ObjectName,
+    pub alias: &'a Option<TableAlias>,
+}
+
+pub fn table_aliased<'a>(name: &'a ObjectName, alias: &'a Option<TableAlias>) -> Table<'a> {
+    Table { name, alias }
+}
+
+pub fn table<'a>(name: &'a ObjectName) -> Table {
+    Table { name, alias: &None }
+}
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
 pub struct Column<'a> {
     pub name: &'a sqlparser::ast::Ident,
     pub def: Option<&'a ColumnDef>,
     pub placeholder: Option<&'a str>,
+    pub alias: Option<&'a Ident>,
+}
+
+pub fn column<'a>(name: &'a Ident) -> Column<'a> {
+    Column {
+        name,
+        def: None,
+        placeholder: None,
+        alias: None,
+    }
+}
+
+pub fn column_with_def<'a>(name: &'a Ident, def: Option<&'a ColumnDef>) -> Column<'a> {
+    Column {
+        name,
+        def,
+        placeholder: None,
+        alias: None,
+    }
 }
 
 #[derive(Debug)]
@@ -37,9 +75,10 @@ pub fn db_schema<'a>(migrate_expr: &'a SqlExpr) -> Result<Schema<'a>> {
                     name: &col.name,
                     def: Some(col),
                     placeholder: None,
+                    alias: None,
                 })
                 .collect();
-            set.insert(Table(name), columns);
+            set.insert(table(name), columns);
             Ok(())
         }
         Statement::AlterTable {
@@ -48,7 +87,7 @@ pub fn db_schema<'a>(migrate_expr: &'a SqlExpr) -> Result<Schema<'a>> {
             for op in operations {
                 match op {
                     AlterTableOperation::AddColumn { column_def, .. } => {
-                        match set.get_mut(&Table(name)) {
+                        match set.get_mut(&table(name)) {
                             Some(columns) => columns.push(Column {
                                 name: &column_def.name,
                                 def: Some(column_def),
@@ -58,7 +97,7 @@ pub fn db_schema<'a>(migrate_expr: &'a SqlExpr) -> Result<Schema<'a>> {
                         };
                     }
                     AlterTableOperation::DropColumn { column_name, .. } => {
-                        match set.get_mut(&Table(name)) {
+                        match set.get_mut(&table(name)) {
                             Some(columns) => {
                                 columns.retain(|col| col.name != column_name);
                             }
@@ -68,7 +107,7 @@ pub fn db_schema<'a>(migrate_expr: &'a SqlExpr) -> Result<Schema<'a>> {
                     AlterTableOperation::RenameColumn {
                         old_column_name,
                         new_column_name,
-                    } => match set.get_mut(&Table(name)) {
+                    } => match set.get_mut(&table(name)) {
                         Some(columns) => {
                             match columns.iter().position(|col| col.name == old_column_name) {
                                 Some(ix) => {
@@ -82,9 +121,9 @@ pub fn db_schema<'a>(migrate_expr: &'a SqlExpr) -> Result<Schema<'a>> {
                         None => {}
                     },
                     AlterTableOperation::RenameTable { table_name } => {
-                        match set.remove(&Table(name)) {
+                        match set.remove(&table(name)) {
                             Some(columns) => {
-                                set.insert(Table(table_name), columns);
+                                set.insert(table(table_name), columns);
                             }
                             None => {}
                         }
@@ -100,7 +139,7 @@ pub fn db_schema<'a>(migrate_expr: &'a SqlExpr) -> Result<Schema<'a>> {
             match object_type {
                 ObjectType::Table => match names.first() {
                     Some(name) => {
-                        set.remove(&Table(name));
+                        set.remove(&table(name));
                     }
                     None => {
                         return Err(Error::new(
@@ -133,7 +172,7 @@ pub fn query_schema<'a>(span: Span, statements: &'a Vec<Statement>) -> Result<Sc
             returning,
             ..
         } => {
-            let table = Table(table_name);
+            let table = table(table_name);
             let mut columns: Vec<Column<'a>> = columns
                 .iter()
                 .map(|name| Column {
@@ -142,7 +181,7 @@ pub fn query_schema<'a>(span: Span, statements: &'a Vec<Statement>) -> Result<Sc
                     placeholder: Some("?"),
                 })
                 .collect();
-            let returning_columns = returning_columns(table, returning);
+            let returning_columns = returning_columns(span, returning)?;
             columns.extend(returning_columns);
             set.insert(table, columns);
             Ok(())
@@ -155,7 +194,7 @@ pub fn query_schema<'a>(span: Span, statements: &'a Vec<Statement>) -> Result<Sc
             returning,
         } => {
             let table = match &table.relation {
-                TableFactor::Table { name, .. } => Table(name),
+                TableFactor::Table { name, alias, .. } => table_aliased(name, alias),
                 _ => todo!(),
             };
             let mut columns: Vec<_> = assignments
@@ -186,7 +225,7 @@ pub fn query_schema<'a>(span: Span, statements: &'a Vec<Statement>) -> Result<Sc
                 .collect();
             let selection_columns = selection_columns(selection);
             columns.extend(selection_columns);
-            let returning_columns = returning_columns(table, returning);
+            let returning_columns = returning_columns(span, returning)?;
             columns.extend(returning_columns);
             set.insert(table, columns);
             Ok(())
@@ -205,12 +244,12 @@ pub fn query_schema<'a>(span: Span, statements: &'a Vec<Statement>) -> Result<Sc
                     ))
                 }
                 Some(table) => match &table.relation {
-                    TableFactor::Table { name, .. } => Table(name),
+                    TableFactor::Table { name, alias, .. } => table_aliased(name, alias),
                     _ => todo!(),
                 },
             };
             let mut columns = selection_columns(selection);
-            let ret_columns = returning_columns(table, returning);
+            let ret_columns = returning_columns(span, returning)?;
             columns.extend(ret_columns);
             set.insert(table, columns);
             Ok(())
@@ -225,7 +264,7 @@ pub fn query_schema<'a>(span: Span, statements: &'a Vec<Statement>) -> Result<Sc
                         ..
                     } => {
                         set.insert(
-                            Table(foreign_table),
+                            table(foreign_table),
                             referred_columns
                                 .iter()
                                 .map(|name| Column {
@@ -240,7 +279,7 @@ pub fn query_schema<'a>(span: Span, statements: &'a Vec<Statement>) -> Result<Sc
                 });
             }
             set.insert(
-                Table(name),
+                table(name),
                 columns
                     .iter()
                     .map(|col| Column {
@@ -257,6 +296,102 @@ pub fn query_schema<'a>(span: Span, statements: &'a Vec<Statement>) -> Result<Sc
     })?;
 
     Ok(Schema(set))
+}
+
+pub fn alias_map<'a>(
+    span: Span,
+    statements: &'a Vec<Statement>,
+) -> Result<Vec<(&'a Ident, &'a Ident)>> {
+    let mut result = vec![];
+    statements.iter().try_for_each(|stmt| {
+        let aliases = match stmt {
+            Statement::Query(query) => query_alias_map(span, &query)?,
+            statement => todo!("fn alias_map {statement}"),
+        };
+        result.push(aliases);
+        Ok::<(), Error>(())
+    });
+    let result = result.into_iter().flatten().collect::<Vec<_>>();
+    Ok(result)
+}
+
+fn query_alias_map<'a>(span: Span, query: &'a Query) -> Result<Vec<(&'a Ident, &'a Ident)>> {
+    let Query {
+        with: _with,
+        body,
+        order_by: _order_by,
+        ..
+    } = query;
+    match body.as_ref() {
+        SetExpr::Select(select) => select_alias_map(span, select.as_ref()),
+        SetExpr::Query(query) => query_alias_map(span, query),
+        _ => todo!("fn set_query_columns"),
+    }
+}
+
+fn select_alias_map<'a>(span: Span, select: &'a Select) -> Result<Vec<(&'a Ident, &'a Ident)>> {
+    let select = select_alias_tuples(span, select);
+    Ok(select)
+}
+
+fn select_alias_tuples<'a>(span: Span, select: &'a Select) -> Vec<(&'a Ident, &'a Ident)> {
+    let Select {
+        from, projection, ..
+    } = select;
+
+    let tables = from
+        .iter()
+        .map(|table_with_joins| {
+            let from = relation_alias_tuples(&table_with_joins.relation);
+
+            let mut joins = table_with_joins
+                .joins
+                .iter()
+                .map(|join| relation_alias_tuples(&join.relation))
+                .collect::<Vec<_>>();
+
+            joins.insert(0, from);
+
+            joins
+        })
+        .flat_map(|tup| tup)
+        .filter_map(|tup| tup)
+        .collect::<Vec<_>>();
+
+    let columns = projection
+        .iter()
+        .map(|select_item| match select_item {
+            SelectItem::UnnamedExpr(_) => todo!(),
+            SelectItem::ExprWithAlias { expr, alias } => todo!(),
+            SelectItem::QualifiedWildcard(_, _) => todo!(),
+            SelectItem::Wildcard(_) => todo!(),
+        })
+        .collect::<Vec<_>>();
+
+    tables
+}
+
+fn relation_alias_tuples<'a>(relation: &'a TableFactor) -> Option<(&'a Ident, &'a Ident)> {
+    match relation {
+        TableFactor::Table {
+            name,
+            alias,
+            args,
+            with_hints,
+            version,
+            partitions,
+        } => match alias {
+            Some(TableAlias {
+                name: alias,
+                columns,
+            }) => match table_from_compound_ident(&name.0) {
+                Some(ident) => Some((ident, alias)),
+                None => todo!(),
+            },
+            None => None,
+        },
+        table_factor => todo!("fn select_containers table_factor {table_factor}"),
+    }
 }
 
 fn set_query_columns<'a>(
@@ -278,7 +413,7 @@ fn set_query_columns<'a>(
                 None => return Err(Error::new(span, "Only one table in from supported for now")),
             };
             let mut columns = selection_columns(&select.selection);
-            let projection_columns = select_items_columns(table, select.projection.as_slice());
+            let projection_columns = select_items_columns(span, select.projection.as_slice())?;
             columns.extend(projection_columns);
             let order_by_columns: Vec<Column<'_>> = order_by
                 .iter()
@@ -297,7 +432,7 @@ fn from_tables(from: &Vec<TableWithJoins>) -> Vec<Table<'_>> {
     from.iter()
         .flat_map(|table| {
             let mut tables = match &table.relation {
-                TableFactor::Table { name, .. } => vec![Table(name)],
+                TableFactor::Table { name, alias, .. } => vec![table_aliased(name, alias)],
                 _ => todo!("fn from_tables"),
             };
             let join_tables: Vec<_> = table
@@ -313,44 +448,80 @@ fn from_tables(from: &Vec<TableWithJoins>) -> Vec<Table<'_>> {
 
 fn relation_table(relation: &TableFactor) -> Table<'_> {
     match relation {
-        TableFactor::Table { name, .. } => Table(name),
+        TableFactor::Table { name, alias, .. } => table_aliased(name, alias),
         _ => todo!("fn relation_table: other TableFactors"),
     }
 }
 
 fn returning_columns<'a>(
-    table: Table<'a>,
+    span: Span,
     returning: &'a Option<Vec<SelectItem>>,
-) -> Vec<Column<'a>> {
+) -> Result<Vec<Column<'a>>> {
     match returning {
-        Some(select_items) => select_items_columns(table, select_items),
-        None => vec![],
+        Some(select_items) => select_items
+            .iter()
+            .filter_map(|si| match si {
+                SelectItem::UnnamedExpr(expr) => match expr {
+                    Expr::Identifier(ident) => Some(Ok(Column {
+                        name: ident,
+                        def: None,
+                        placeholder: None,
+                    })),
+                    Expr::CompoundIdentifier(ident) => match compound_ident_column(ident) {
+                        Some(col) => Some(Ok(col)),
+                        None => None,
+                    },
+                    Expr::QualifiedWildcard(_) => Some(Err(Error::new(
+                        span,
+                        "RETURNING may not use \"{expr}.*\" wildcards",
+                    ))),
+                    _ => None,
+                },
+                SelectItem::ExprWithAlias { expr: _expr, alias } => Some(Ok(Column {
+                    name: alias,
+                    def: None,
+                    placeholder: None,
+                })),
+                SelectItem::QualifiedWildcard(_, _) => Some(Err(Error::new(
+                    span,
+                    "RETURNING may not use \"{expr}.*\" wildcards",
+                ))),
+                SelectItem::Wildcard(_) => None,
+            })
+            .collect(),
+        None => Ok(vec![]),
     }
 }
 
-fn select_items_columns<'a>(_table: Table<'a>, select_items: &'a [SelectItem]) -> Vec<Column<'a>> {
+fn select_items_columns<'a>(span: Span, select_items: &'a [SelectItem]) -> Result<Vec<Column<'a>>> {
     select_items
         .iter()
-        .filter_map(|si| match si {
+        .map(|si| match si {
             SelectItem::UnnamedExpr(expr) => match expr {
-                Expr::Identifier(name) => Some(Column {
-                    name,
-                    def: None,
-                    placeholder: None,
-                }),
-                Expr::CompoundIdentifier(name) => compound_ident_column(name),
+                Expr::Identifier(name) => Err(Error::new(
+                    span,
+                    format!("{name} is not allowed. Only qualified column names supported"),
+                )),
+                Expr::CompoundIdentifier(name) => compound_ident_column(name).ok_or(Error::new(
+                    span,
+                    format!("{expr} is not allowed. Only qualified column names supported"),
+                )),
                 _ => todo!("fn select_items_columns selectitem match"),
             },
-            SelectItem::ExprWithAlias { expr, .. } => match expr {
-                Expr::Identifier(name) => Some(Column {
+            SelectItem::ExprWithAlias { expr, alias, .. } => match expr {
+                Expr::Identifier(name) => Ok(Column {
                     name,
                     def: None,
+                    alias: Some(alias),
                     placeholder: None,
                 }),
-                Expr::CompoundIdentifier(name) => compound_ident_column(name),
+                Expr::CompoundIdentifier(name) => compound_ident_column(name).ok_or(Error::new(
+                    span,
+                    format!("{expr} is not allowed. Only qualified column names supported",),
+                )),
                 expr => todo!("fn select_items_columns ExprWithAlias {expr}"),
             },
-            _ => None,
+            si => todo!("fn select_items_columns {si}"),
         })
         .collect()
 }
@@ -370,6 +541,15 @@ fn compound_ident_column<'a>(name: &'a Vec<Ident>) -> Option<Column<'a>> {
             placeholder: None,
         }),
         None => None,
+    }
+}
+
+pub fn table_from_compound_ident<'a>(name: &'a Vec<Ident>) -> Option<&'a Ident> {
+    match name.as_slice() {
+        [_schema, table, _name] => Some(table),
+        [table, _name] => Some(table),
+        [table] => Some(table),
+        _ => None,
     }
 }
 

@@ -245,7 +245,7 @@ mod tests {
             "#;
 
             let all_users = r#"
-                select id, name from User
+                select users.id, users.name from User as users
             "#;
         }
 
@@ -287,6 +287,58 @@ mod tests {
                 );
             "#;
         }
+        let db = static_sqlite::open(":memory:").await?;
+        migrate(&db).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn alias_check_works() -> Result<()> {
+        sql! {
+            let migrate = r#"
+                create table User (
+                    id integer primary key,
+                    email text unique not null
+                );
+
+                create table Todo (
+                    id integer primary key,
+                    owner_id integer not null references User(id),
+                    assignee_id integer not null references User(id)
+                );
+            "#;
+
+            let todos = r#"
+                select todos.id, owner.email as owner_email, assignee.email as assignee_email
+                from Todo as todos
+                join User as owner on owner.id == todo.owner_id
+                join User as assignee on assignee.id == todo.assignee_id
+                where todos.id = ?
+            "#;
+        }
+        // or
+        // id -> [{ aliases: [], refs: [Todo] }]
+        // owner.email -> [{ aliases: [owner_email], refs: [owner, User] }] 
+        // assignee.email -> [{ aliases: [Alias(assignee_email), refs: [assignee, User] }] 
+        // todos.id -> [{ aliases: [], refs: [Alias(todos), Table(Todo)] }]
+        // 
+        // or restrict to compound identifiers always ?
+        // type Alias = HashMap<Ident, Ident>;
+        // 
+        // todos -> Todo
+        // owner -> User
+        // assignee -> User
+        // owner_email -> owner.email
+        // assignee_email -> assignee.email
+
+        // Todo -> [id, owner_id, assignee_id]
+        // User -> [id, email]
+        // owner -> [id, email]
+        // assignee -> [id, email]
+        // Container -> Columns
+        // 
+        // returns a new struct -> struct Todos { id: i64, owner_email: String, assignee_email: String }
         let db = static_sqlite::open(":memory:").await?;
         migrate(&db).await?;
 

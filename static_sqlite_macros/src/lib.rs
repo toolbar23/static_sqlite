@@ -5,8 +5,12 @@ use sqlparser::{ast::Statement, dialect::SQLiteDialect, parser::Parser};
 use syn::{parse_macro_input, Error, LocalInit, PatIdent, Result};
 
 mod schema;
+mod extract;
 
-use schema::{db_schema, placeholder_len, query_schema, query_table_names, Column, Schema, Table};
+use schema::{
+    alias_map, db_schema, placeholder_len, query_schema, query_table_names,
+    table_from_compound_ident, AliasMap, Column, Schema, Table,
+};
 
 /// Make rust structs and functions from sql
 ///
@@ -165,6 +169,7 @@ fn migrate_fn(expr: &SqlExpr) -> TokenStream {
 fn validate_query(
     db_schema: &Schema<'_>,
     query_schema: &Schema<'_>,
+    alias_map: &AliasMap,
     span: Span,
 ) -> Option<TokenStream> {
     let tokens = query_schema
@@ -202,15 +207,115 @@ fn validate_query(
                     None
                 }
             }
-            None => Some(
-                Error::new(span, format!("Table {} doesn't exist", table.0)).to_compile_error(),
-            ),
+            None => {
+                // if the table doesn't exist in query_schema
+                // try looping through the tables with aliases (alias.is_some())
+                // if one exists, then validate the columns from the aliased table
+                let table_name = match table_from_compound_ident(&table.0 .0) {
+                    Some(ident) => ident,
+                    None => {
+                        return Some(
+                            Error::new(span, format!("Invalid table name {}", &table.0))
+                                .to_compile_error(),
+                        )
+                    }
+                };
+                match alias_map.get(table_name) {
+                    Some(table_name) => ,
+                    None => Some(
+                        Error::new(span, format!("Table {} doesn't exist", table.0))
+                            .to_compile_error(),
+                    ),
+                }
+            }
         })
         .collect::<Vec<_>>();
 
     match tokens.is_empty() {
         true => None,
         false => Some(quote! { #(#tokens)* }),
+    }
+}
+
+// go back to one big vec of columns
+// there can be duplicates
+/*
+
+// valid
+select todos.id, owner.email as owner_email, assignee.email as assignee_email
+from Todo as todos
+join User as owner on owner.id == todos.owner_id
+join User as assignee on assignee.id == todos.assignee_id
+where todos.id = ?
+
+db schema:
+User -> [Col(id), Col(email)]
+Todo -> [Col(id), Col(owner_id), Col(assignee_id)]
+id -> [Table(Todo), Table(User)]
+email -> [Table(Todo)]
+
+query_schema: 
+Todo -> [Alias(todos)]
+todos -> [Table(Todo), Col(id), Col(owner_id), Col(assignee_id)]
+owner -> [Table(User), Col(id), Col(email)]
+assignee -> [Table(User), Col(email)]
+id -> [Alias(todos)]
+email -> [Table(User)]
+owner_email -> [Col(email)]
+assignee_email -> [Col(email)]
+
+enum Name {
+    Table(Vec<Ident>),
+    Column(Vec<Ident>),
+    Alias(Vec<Ident>),
+}
+
+Q: is todos.id valid?
+yes:
+
+aliased == "todos"
+column_name == "id"
+
+query_schema.get(aliased) -> 
+filter for table [Table(Todo), ...] ->
+Table(todo) ->
+db_schema.get(Table(todo)) -> [Col(id), ...]
+contains [Col(id)] column_name
+
+fn check_column(span, db_schema, query_schema, column: Column) -> Result<TokenStream> {
+    // TODO: qualified
+    // TODO: unqualified
+}
+
+enum Name<'a> {
+    Schema(&'a str),
+    Table(&'a str),
+    Column(&'a str),
+    QualifiedTable(&'a [&'a str;2]),
+    QualifiedColumn(&'a [&'a str;3]),
+}
+
+enum Rel<'a> {
+    Alias(Name<'a>),
+    Table(Name<'a>),
+    View(Name<'a>),
+    Unqualified
+}
+
+struct Column<'a> {
+    rels: Vec<Rel<'a>>, 
+    name: Name<'a>,
+    def: Option<&'a ColumnDef>>,
+    placeholder: Option<&'a str>
+}
+*/
+
+fn get_table<'a>(db_schema: &Schema<'a>, table: &'a Table<'a>) -> Table<'a> {
+    match db_schema.0.get(table) {
+        Some(columns) => columns,
+        None => {
+            // check for aliased table
+        },
     }
 }
 
@@ -225,7 +330,7 @@ fn fn_tokens(
         sql,
         statements,
     } = expr;
-    let validated_tokens = validate_query(db_schema, query_schema, span);
+    let validated_tokens = validate_query(db_schema, query_schema, &alias_map, span);
     match validated_tokens {
         Some(tokens) => return Ok(tokens),
         None => {}
