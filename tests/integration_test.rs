@@ -273,43 +273,112 @@ async fn parameters_that_are_not_in_the_schema_work() -> Result<()> {
 
 
 #[tokio::test]
-async fn duplicate_column_names_in_one_query_work() -> Result<()> {
+async fn example_friendshipworks() -> Result<()> {
+    use static_sqlite::{sql, Result, self};
+
     sql! {
         let migrate = r#"
             create table User (
                 id integer primary key,
-                name text not null
+                name text unique not null
             );
 
-            create table Post (
+            create table Friendship (
                 id integer primary key,
                 user_id integer not null references User(id),
-                name text not null
+                friend_id integer not null references User(id)
             );
         "#;
 
-        let insert_user =               r#"insert into User (name) values (:name) returning *"#;
-        let insert_post =               r#"insert into Post (user_id, name) values (:user_id, :name) returning *"#;
-        let select_posts_by_user_id =   r#"select p.id, p.name, u.name as user_name from Post p, User u where p.user_id = u.id AND u.id = :id"#;
-        let select_posts_all =          r#"select p.id, p.name, u.name as user_name from Post p, User u where p.user_id = u.id"#;
+        let insert_user = r#"
+            insert into User (name)
+            values (:name)
+            returning *
+        "#;
+        let create_friendship = r#"
+            insert into Friendship (user_id, friend_id)
+            values (:user_id, :friend_id)
+            returning *
+        "#;
+        let get_friendship = r#"
+            SELECT
+                u1.name as friend1_name__TEXT,
+                u2.name as friend2_name__TEXT
+            FROM Friendship, User as u1, User as u2
+            WHERE Friendship.user_id = u1.id
+                  AND Friendship.friend_id = u2.id
+                  AND Friendship.id = :friendship_id__INTEGER
+        "#;
     }
 
     let db = static_sqlite::open(":memory:").await?;
     let _ = migrate(&db).await?;
-    let user1 = insert_user(&db, "user1").await?.first_row()?;
-    insert_post(&db, user1.id, "user 1 - post1").await?.first_row()?;
-    insert_post(&db, user1.id, "user 1 - post2").await?.first_row()?;
-    let user2 = insert_user(&db, "user2").await?.first_row()?;
-    insert_post(&db, user2.id, "user 2 - post1").await?;
-    insert_post(&db, user2.id, "user 2 - post2").await?;
+    insert_user(&db, "swlkr").await?;
+    insert_user(&db, "toolbar23").await?;
+    create_friendship(&db, 1, 2).await?;
 
-    let posts = select_posts_by_user_id(&db, 2).await?;
-    println!("{:?}", posts);
-    let posts = select_posts_all(&db).await?;
-    println!("{:?}", posts);
+    let friends = get_friendship(&db, 1).await?;
+
+    assert_eq!(friends.len(), 1);
+    assert_eq!(friends.first().unwrap().friend1_name, "swlkr");
+    assert_eq!(friends.first().unwrap().friend2_name, "toolbar23");
 
     Ok(())
+
 }
+
+
+
+#[tokio::test]
+async fn duplicate_column_names_in_one_quer2y_work() -> Result<()> {
+sql! {
+    let migrate = r#"
+        CREATE TABLE IF NOT EXISTS Identifiers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type INTEGER NOT NULL,
+            identifier_type TEXT NOT NULL,
+            identifier_value TEXT NOT NULL,
+            UNIQUE(entity_type, identifier_type, identifier_value)
+        );
+
+        CREATE TABLE IF NOT EXISTS MappingChanges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_identifier INTEGER NOT NULL REFERENCES Identifiers(id),
+            to_identifier_previous INTEGER NOT NULL REFERENCES Identifiers(id),
+            to_identifier_new INTEGER NOT NULL REFERENCES Identifiers(id),
+            timestamp INTEGER NOT NULL
+        );
+    "#;
+
+    let get_changes = r#"
+        SELECT
+            mc.id,
+            mc.timestamp,
+            f.entity_type,
+            f.identifier_type,
+            f.identifier_value,
+            op.identifier_type as old_type__TEXT__NULLABLE,
+            op.identifier_value as old_value__TEXT__NULLABLE,
+            n.identifier_type as new_type__TEXT__NULLABLE,
+            n.identifier_value as new_value__TEXT__NULLABLE
+        FROM MappingChanges mc, Identifiers f, Identifiers op, Identifiers n
+        WHERE mc.from_identifier = f.id
+        AND mc.to_identifier_previous = op.id
+        AND mc.to_identifier_new = n.id
+        AND mc.timestamp > :since__INTEGER
+        ORDER BY mc.timestamp ASC
+    "#;
+}
+
+let db = static_sqlite::open(":memory:").await?;
+let _ = migrate(&db).await?;
+let changes = get_changes(&db, 1).await?;
+println!("{:?}", changes);
+
+Ok(())
+}
+
+
 
 #[test]
 fn ui() {

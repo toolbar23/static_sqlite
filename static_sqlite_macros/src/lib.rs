@@ -411,6 +411,7 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
             .map(|input| input.replacen(":", "", 1))
             .collect();
         let mut table_names = table_names(db, expr)?;
+
         // get joined table names that might not exist in select clause
         table_names.extend(join_table_names(expr));
         let mut schema_rows = vec![];
@@ -420,91 +421,63 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
                 None => {}
             };
         }
-        let input_schema_rows: Vec<&&SchemaRow> = inputs
-            .iter()
-            .filter_map(|col_name| schema_rows.iter().find(|row| &row.column_name == col_name))
-            .collect();
 
         let fn_args = inputs
             .iter()
-            .map(|fieldname| {
-                // if fieldname is in the form of <name>__<type> or <name>__<type>__<nullable> then extract the name and type
-                let parts_in_fieldname = fieldname.split("__").collect::<Vec<_>>();
-                if parts_in_fieldname.len() == 2 || parts_in_fieldname.len() == 3 {
-                    let column_type = parts_in_fieldname[1];
-                    let field_name = Ident::new(&fieldname.to_string().to_lowercase(), expr.ident.span());
-                    let field_type = create_fn_argument_type(fieldname, column_type);
-                    let nullable =  parts_in_fieldname.len() == 3 && parts_in_fieldname[2] == "nullable";
-                    match nullable {
-                        true => quote! { #field_name: Option<#field_type> },
-                        false => quote! { #field_name: #field_type },
+            .map(|aliases_column_name| {
+                match parse_type_hinted_column_name(aliases_column_name, &schema_rows) {
+                    TypedToken::FromTypeHint(type_hint) => {
+                        let field_name = Ident::new(&type_hint.alias, expr.ident.span());
+                        let field_type = create_fn_argument_type(&type_hint.alias, &type_hint.column_type);
+                        match type_hint.not_null {
+                            0 => quote! { #field_name: Option<#field_type> },
+                            _ => quote! { #field_name: #field_type },
+                        }
+                    },
+                    TypedToken::FromSchemaRow(schema_row) => {
+                        let field_name = Ident::new(&schema_row.column_name, expr.ident.span());
+                        let field_type = create_fn_argument_type(aliases_column_name, &schema_row.column_type);
+                        match (schema_row.pk, schema_row.not_null) {
+                            (0, 0) => quote! { #field_name: Option<#field_type> },
+                            _ => quote! { #field_name: #field_type },
+                        }
                     }
-                // otherwise is has to be a column name
-                } else if let Some(field) = input_schema_rows
-                    .iter()
-                    .find(|row| &row.column_name == fieldname)
-                {
-                    let field_type = create_fn_argument_type( fieldname, field.column_type.as_str());
-                    let field_name = Ident::new(&field.column_name, expr.ident.span());
-                    let not_null = field.not_null;
-                    let pk = field.pk;
-                    match (pk, not_null) {
-                        (0, 0) => quote! { #field_name: Option<#field_type> },
-                        _ => quote! { #field_name: #field_type },
-                    }
-                } else {
-                    unimplemented!(
-                        "field {:?} not found in schema and has no __<type> suffix",
-                        fieldname
-                    );
                 }
             })
             .collect::<Vec<TokenStream>>();
+
         let params = inputs
             .iter()
-            .map(|fieldname| {
-                 // if fieldname is in the form of <name>__<type> or <name>__<type>__<nullable> then extract the name and type
-                let parts_in_fieldname = fieldname.split("__").collect::<Vec<_>>();
-                if parts_in_fieldname.len() == 2  || parts_in_fieldname.len() == 3 {
-                    let field_name = Ident::new(&fieldname.to_string().to_lowercase(), expr.ident.span());
-                    let not_null =  if parts_in_fieldname.len() == 3 && parts_in_fieldname[2] == "nullable" { 0 } else { 1 };
-                    let type_hint = parts_in_fieldname[1];
-                    return create_binding_value(type_hint, not_null, field_name);
-                 // otherwise is has to be a column name
-                } else if let Some(field) = input_schema_rows
-                    .iter()
-                    .find(|row| &row.column_name == fieldname)
-                {
-                    let not_null = field.not_null;
-                    let name = Ident::new(&field.column_name, expr.ident.span());
-                    create_binding_value(field.column_type.as_str(), not_null, name)
-                } else {
-                    unimplemented!(
-                        "field {:?} not found in schema and has no __<type> suffix",
-                        fieldname
-                    );
+            .map(|aliases_column_name| {
+                match parse_type_hinted_column_name(aliases_column_name, &schema_rows) {
+                    TypedToken::FromTypeHint(type_hint) => {
+                        let field_name = Ident::new(&type_hint.alias, expr.ident.span());
+                        create_binding_value(&type_hint.column_type, type_hint.not_null, field_name)
+                    },
+                    TypedToken::FromSchemaRow(schema_row) => {
+                        let field_name = Ident::new(&schema_row.column_name, expr.ident.span());
+                        create_binding_value(&schema_row.column_type, schema_row.not_null, field_name)
+                    }
                 }
+
             })
             .collect::<Vec<TokenStream>>();
+
         let ident = &expr.ident;
         let outputs = output_column_names(db, expr)?;
         let pascal_case = snake_to_pascal_case(&ident);
-        let cols: Vec<SchemaRow> = outputs
-            .iter()
-            .filter_map(|col_name| {
-                schema_rows
-                    .iter()
-                    .find(|row| &row.column_name == col_name)
-                    .cloned()
-                    .cloned()
-            })
-            .collect();
-        let struct_tokens = struct_tokens(expr.ident.span(), &pascal_case, &cols);
+
+        let output_typed = outputs.iter().map(|output| parse_type_hinted_column_name(output, &schema_rows)).collect::<Vec<_>>();
+
+        let struct_tokens = struct_tokens(expr.ident.span(), &pascal_case, &output_typed);
+
+
         let sql = &expr.sql;
         output.push(quote! {
             #struct_tokens
 
             #[doc = #sql]
+            #[allow(non_snake_case)]
             #[allow(non_snake_case)]
             pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) -> Result<Vec<#pascal_case>> {
                 let rows: Vec<#pascal_case> = static_sqlite::query(db, #sql, vec![#(#params,)*]).await?;
@@ -549,6 +522,54 @@ fn create_binding_value(field_type: &str, not_null: i64, name: Ident) -> TokenSt
     }
 }
 
+#[derive(Debug, Clone)]
+struct TypeHintedToken {
+    name: String,
+    alias: String,
+    column_type: String,
+    not_null: i64,
+}
+
+#[derive(Debug, Clone)]
+enum TypedToken { FromTypeHint(TypeHintedToken), FromSchemaRow(SchemaRow) }
+
+/*
+ * Parses a type hint and returns a TypedColumnOrParameter
+ *
+ * If the alias is in the form of <name>__<type> or <name>__<type>__<nullable> then it is a type hint
+ * Otherwise it is a column name
+ *
+ */
+fn parse_type_hinted_column_name(alias: &str, schema_rows: &Vec<&SchemaRow>) -> TypedToken {
+    let parts = alias.split("__").collect::<Vec<_>>();
+    let result = match parts.len() {
+        1 => TypedToken::FromSchemaRow(
+            match schema_rows.iter().find(|row| &row.column_name == alias) {
+                Some(row) => (**row).clone(),
+                None => panic!("Column {:?} referenced in binding or column not found in schema, maybe you forgot to add the type hint?", alias),
+            }
+        ),
+        2 => TypedToken::FromTypeHint(TypeHintedToken {
+            alias: alias.to_string(),
+            name: parts[0].to_string(),
+            column_type: parts[1].to_string(),
+            not_null: 1,
+        }),
+        3 => TypedToken::FromTypeHint(TypeHintedToken {
+            alias: alias.to_string(),
+            name: parts[0].to_string(),
+            column_type: parts[1].to_string(),
+            not_null: match parts[2].to_lowercase().as_str() {
+                "nullable" => 0,
+                "not_null" => 1,
+                _ => panic!("Invalid type hint: {:?}, last part must be nullable or not_null", alias),
+            },
+        }),
+        _ => panic!("Invalid type hint: {:?}", alias),
+    };
+    result
+}
+
 fn join_table_names(expr: &&SqlExpr) -> Vec<String> {
     let mut output = vec![];
     visit_relations(&expr.statements, |rel| {
@@ -584,16 +605,32 @@ fn structs_tokens(span: Span, schema: &Schema) -> Vec<TokenStream> {
         .iter()
         .map(|(table, cols)| {
             let ident = proc_macro2::Ident::new(&table, span);
-            struct_tokens(span, &ident, cols)
+            let typed_tokens: Vec<TypedToken> = cols.iter()
+                .map(|col| TypedToken::FromSchemaRow(col.clone()))
+                .collect();
+            struct_tokens(span, &ident, &typed_tokens)
         })
         .collect()
 }
 
-fn struct_tokens(span: Span, ident: &Ident, cols: &Vec<SchemaRow>) -> TokenStream {
-    let struct_fields = cols.iter().map(|row| {
-        let field_type = field_type(row);
-        let name = Ident::new(&row.column_name, span);
-        let optional = match (row.not_null, row.pk) {
+
+fn struct_tokens(span: Span, ident: &Ident, output_typed: &[TypedToken]) -> TokenStream {
+    let struct_fields = output_typed.iter().map(|row| {
+        let field_type = match row {
+            TypedToken::FromTypeHint(type_hint) => field_type_from_datatype_name(&type_hint.column_type),
+            TypedToken::FromSchemaRow(schema_row) => field_type(schema_row),
+        };
+        let name = match row {
+            TypedToken::FromTypeHint(type_hint) => Ident::new(&type_hint.name, span),
+            TypedToken::FromSchemaRow(schema_row) => Ident::new(&schema_row.column_name, span),
+        };
+        let optional = match ( match row {
+            TypedToken::FromTypeHint(type_hint) => type_hint.not_null,
+            TypedToken::FromSchemaRow(schema_row) => schema_row.not_null,
+        }, match row {
+            TypedToken::FromTypeHint(_) => 0,
+            TypedToken::FromSchemaRow(schema_row) => schema_row.pk,
+        }) {
             (0, 0) => true,
             (0, 1) | (1, 0) | (1, 1) => false,
             _ => unreachable!(),
@@ -604,9 +641,15 @@ fn struct_tokens(span: Span, ident: &Ident, cols: &Vec<SchemaRow>) -> TokenStrea
             false => quote! { pub #name: #field_type },
         }
     });
-    let match_stmt = cols.iter().map(|field| {
-        let name = Ident::new(&field.column_name, span);
-        let lit_str = LitStr::new(&field.column_name, span);
+    let match_stmt = output_typed.iter().map(|row| {
+        let name = Ident::new(match row {
+            TypedToken::FromTypeHint(type_hint) => &type_hint.name,
+            TypedToken::FromSchemaRow(schema_row) => &schema_row.column_name,
+        }, span);
+        let lit_str = LitStr::new(match row {
+            TypedToken::FromTypeHint(type_hint) => &type_hint.alias,
+            TypedToken::FromSchemaRow(schema_row) => &schema_row.column_name,
+        }, span);
 
         quote! {
             #lit_str => row.#name = value.try_into()?
@@ -634,8 +677,14 @@ fn struct_tokens(span: Span, ident: &Ident, cols: &Vec<SchemaRow>) -> TokenStrea
     tokens
 }
 
+
 fn field_type(row: &SchemaRow) -> TokenStream {
-    match row.column_type.as_str() {
+    field_type_from_datatype_name(&row.column_type)
+}
+
+
+fn field_type_from_datatype_name(datatype_name: &str) -> TokenStream {
+    match datatype_name {
         "BLOB" => quote! { Vec<u8> },
         "INTEGER" => quote! { i64 },
         "REAL" | "DOUBLE" => quote! { f64 },
