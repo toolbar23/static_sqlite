@@ -424,49 +424,65 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
             .iter()
             .filter_map(|col_name| schema_rows.iter().find(|row| &row.column_name == col_name))
             .collect();
-        let fn_args = input_schema_rows
+
+        let fn_args = inputs
             .iter()
-            .map(|field| {
-                let field_type = match field.column_type.as_str() {
-                    "BLOB" => quote! { Vec<u8> },
-                    "INTEGER" => quote! { i64 },
-                    "REAL" | "DOUBLE" => quote! { f64 },
-                    "TEXT" => quote! { impl ToString },
-                    _ => unimplemented!("Sqlite fn arg not supported"),
-                };
-                let field_name = Ident::new(&field.column_name, expr.ident.span());
-                let not_null = field.not_null;
-                let pk = field.pk;
-                match (pk, not_null) {
-                    (0, 0) => quote! { #field_name: Option<#field_type> },
-                    _ => quote! { #field_name: #field_type },
+            .map(|fieldname| {
+                // if fieldname is in the form of <name>__<type> or <name>__<type>__<nullable> then extract the name and type
+                let parts_in_fieldname = fieldname.split("__").collect::<Vec<_>>();
+                if parts_in_fieldname.len() == 2 || parts_in_fieldname.len() == 3 {
+                    let column_type = parts_in_fieldname[1];
+                    let field_name = Ident::new(&fieldname.to_string().to_lowercase(), expr.ident.span());
+                    let field_type = create_fn_argument_type(fieldname, column_type);
+                    let nullable =  parts_in_fieldname.len() == 3 && parts_in_fieldname[2] == "nullable";
+                    match nullable {
+                        true => quote! { #field_name: Option<#field_type> },
+                        false => quote! { #field_name: #field_type },
+                    }
+                // otherwise is has to be a column name
+                } else if let Some(field) = input_schema_rows
+                    .iter()
+                    .find(|row| &row.column_name == fieldname)
+                {
+                    let field_type = create_fn_argument_type( fieldname, field.column_type.as_str());
+                    let field_name = Ident::new(&field.column_name, expr.ident.span());
+                    let not_null = field.not_null;
+                    let pk = field.pk;
+                    match (pk, not_null) {
+                        (0, 0) => quote! { #field_name: Option<#field_type> },
+                        _ => quote! { #field_name: #field_type },
+                    }
+                } else {
+                    unimplemented!(
+                        "field {:?} not found in schema and has no __<type> suffix",
+                        fieldname
+                    );
                 }
             })
             .collect::<Vec<TokenStream>>();
-        let params = input_schema_rows
+        let params = inputs
             .iter()
-            .map(|field| {
-                let not_null = field.not_null;
-                let name = Ident::new(&field.column_name, expr.ident.span());
-                match field.column_type.as_str() {
-                    "BLOB" => {
-                        quote! { #name.into() }
-                    }
-                    "INTEGER" => quote! { #name.into() },
-                    "REAL" | "DOUBLE" => quote! { #name.into() },
-                    "TEXT" => match not_null {
-                        1 => quote! {
-                            #name.to_string().into()
-                        },
-                        0 => quote! {
-                            match #name {
-                                Some(val) => val.to_string().into(),
-                                None => static_sqlite::Value::Null
-                            }
-                        },
-                        _ => unreachable!(),
-                    },
-                    _ => unimplemented!("Sqlite param not supported"),
+            .map(|fieldname| {
+                 // if fieldname is in the form of <name>__<type> or <name>__<type>__<nullable> then extract the name and type
+                let parts_in_fieldname = fieldname.split("__").collect::<Vec<_>>();
+                if parts_in_fieldname.len() == 2  || parts_in_fieldname.len() == 3 {
+                    let field_name = Ident::new(&fieldname.to_string().to_lowercase(), expr.ident.span());
+                    let not_null =  if parts_in_fieldname.len() == 3 && parts_in_fieldname[2] == "nullable" { 0 } else { 1 };
+                    let type_hint = parts_in_fieldname[1];
+                    return create_binding_value(type_hint, not_null, field_name);
+                 // otherwise is has to be a column name
+                } else if let Some(field) = input_schema_rows
+                    .iter()
+                    .find(|row| &row.column_name == fieldname)
+                {
+                    let not_null = field.not_null;
+                    let name = Ident::new(&field.column_name, expr.ident.span());
+                    create_binding_value(field.column_type.as_str(), not_null, name)
+                } else {
+                    unimplemented!(
+                        "field {:?} not found in schema and has no __<type> suffix",
+                        fieldname
+                    );
                 }
             })
             .collect::<Vec<TokenStream>>();
@@ -489,6 +505,7 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
             #struct_tokens
 
             #[doc = #sql]
+            #[allow(non_snake_case)]
             pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) -> Result<Vec<#pascal_case>> {
                 let rows: Vec<#pascal_case> = static_sqlite::query(db, #sql, vec![#(#params,)*]).await?;
                 Ok(rows)
@@ -496,6 +513,40 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
         })
     }
     Ok(output)
+}
+
+fn create_fn_argument_type(fieldname: &String, column_type: &str) -> TokenStream {
+    match column_type {
+        "BLOB" => quote! { Vec<u8> },
+        "INTEGER" => quote! { i64 },
+        "REAL" | "DOUBLE" => quote! { f64 },
+        "TEXT" => quote! { impl ToString },
+        _ => unimplemented!("type {:?} not supported for fn arg {:?}", column_type, fieldname),
+    }
+}
+
+fn create_binding_value(field_type: &str, not_null: i64, name: Ident) -> TokenStream {
+    match field_type {
+        "BLOB" => {
+            quote! { #name.into() }
+        }
+        "INTEGER" => quote! { #name.into() },
+        "REAL" | "DOUBLE" => quote! { #name.into() },
+        "TEXT" => match not_null {
+            1 => quote! {
+
+                #name.to_string().into()
+            },
+            0 => quote! {
+                match #name {
+                    Some(val) => val.to_string().into(),
+                    None => static_sqlite::Value::Null
+                }
+            },
+            _ => unreachable!(),
+        },
+        _ => unimplemented!("Sqlite param not supported"),
+    }
 }
 
 fn join_table_names(expr: &&SqlExpr) -> Vec<String> {

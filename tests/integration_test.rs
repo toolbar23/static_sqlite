@@ -226,6 +226,91 @@ async fn crud_works() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn parameters_that_are_not_in_the_schema_work() -> Result<()> {
+    sql! {
+        let migrate = r#"
+            create table User (
+                id integer primary key,
+                name text unique not null
+            );
+
+            create table Post (
+                id integer primary key,
+                user_id integer not null references User(id),
+                name text unique not null
+            );
+        "#;
+
+        let insert_user = r#"
+            insert into User (name) values (:name) returning *
+        "#;
+
+        let insert_post = r#"
+            insert into Post (user_id, name) values (:user_id, :name) returning *
+        "#;
+        let select_posts = r#"
+            select * from Post  where id = :id AND id = :id__INTEGER AND name = :id__INTEGER AND name = :name AND :ff__TEXT="sdd"
+         "#;
+    }
+
+    let db = static_sqlite::open(":memory:").await?;
+    let _ = migrate(&db).await?;
+    let user1 = insert_user(&db, "user1").await?.first_row()?;
+    insert_post(&db, user1.id, "user 1 - post1").await?.first_row()?;
+    insert_post(&db, user1.id, "user 1 - post2").await?.first_row()?;
+    let user2 = insert_user(&db, "user2").await?.first_row()?;
+    insert_post(&db, user2.id, "user 2 - post1").await?.first_row()?;
+    insert_post(&db, user2.id, "user 2 - post2").await?.first_row()?;
+
+    let posts = select_posts(&db, 1, 2, "Hello", "sdd").await?;
+    println!("{:?}", posts);
+
+
+    Ok(())
+}
+
+
+
+#[tokio::test]
+async fn duplicate_column_names_in_one_query_work() -> Result<()> {
+    sql! {
+        let migrate = r#"
+            create table User (
+                id integer primary key,
+                name text not null
+            );
+
+            create table Post (
+                id integer primary key,
+                user_id integer not null references User(id),
+                name text not null
+            );
+        "#;
+
+        let insert_user =               r#"insert into User (name) values (:name) returning *"#;
+        let insert_post =               r#"insert into Post (user_id, name) values (:user_id, :name) returning *"#;
+        let select_posts_by_user_id =   r#"select p.id, p.name, u.name as user_name from Post p, User u where p.user_id = u.id AND u.id = :id"#;
+        let select_posts_all =          r#"select p.id, p.name, u.name as user_name from Post p, User u where p.user_id = u.id"#;
+    }
+
+    let db = static_sqlite::open(":memory:").await?;
+    let _ = migrate(&db).await?;
+    let user1 = insert_user(&db, "user1").await?.first_row()?;
+    insert_post(&db, user1.id, "user 1 - post1").await?.first_row()?;
+    insert_post(&db, user1.id, "user 1 - post2").await?.first_row()?;
+    let user2 = insert_user(&db, "user2").await?.first_row()?;
+    insert_post(&db, user2.id, "user 2 - post1").await?;
+    insert_post(&db, user2.id, "user 2 - post2").await?;
+
+    let posts = select_posts_by_user_id(&db, 2).await?;
+    println!("{:?}", posts);
+    let posts = select_posts_all(&db).await?;
+    println!("{:?}", posts);
+
+    Ok(())
+}
+
 #[test]
 fn ui() {
     let t = trybuild::TestCases::new();
