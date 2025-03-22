@@ -70,6 +70,7 @@ or
 
 If not explicitly specified, the parameter or column is assumed to be NOT NULL.
 
+```rust
 sql! {
      let migrate = r#"
         create table User (
