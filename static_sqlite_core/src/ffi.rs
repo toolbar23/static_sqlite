@@ -287,7 +287,8 @@ impl Sqlite {
             let count = sqlite3_column_count(stmt);
             for i in 0..count {
                 let name_ptr = sqlite3_column_name(stmt, i);
-                 if !name_ptr.is_null() {
+
+                if !name_ptr.is_null() {
                     let name = CStr::from_ptr(name_ptr).to_string_lossy().into_owned();
                     columns.push(name);
                 }

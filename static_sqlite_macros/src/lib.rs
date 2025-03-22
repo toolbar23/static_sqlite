@@ -411,7 +411,6 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
             .map(|input| input.replacen(":", "", 1))
             .collect();
         let mut table_names = table_names(db, expr)?;
-
         // get joined table names that might not exist in select clause
         table_names.extend(join_table_names(expr));
         let mut schema_rows = vec![];
@@ -477,7 +476,6 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
             #struct_tokens
 
             #[doc = #sql]
-            #[allow(non_snake_case)]
             #[allow(non_snake_case)]
             pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) -> Result<Vec<#pascal_case>> {
                 let rows: Vec<#pascal_case> = static_sqlite::query(db, #sql, vec![#(#params,)*]).await?;
