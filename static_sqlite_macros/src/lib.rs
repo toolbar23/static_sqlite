@@ -380,7 +380,7 @@ fn migrate_fn(expr: &SqlExpr) -> TokenStream {
     let SqlExpr { ident, sql, .. } = expr;
 
     quote! {
-        pub async fn #ident(sqlite: &static_sqlite::Sqlite) -> Result<()> {
+        pub async fn #ident(sqlite: &static_sqlite::Sqlite) -> static_sqlite::Result<()> {
             let sql = #sql.to_string();
             let _ = static_sqlite::execute_all(&sqlite, "create table if not exists __migrations__ (sql text primary key not null);".into()).await?;
             for stmt in sql.split(";").filter(|s| !s.trim().is_empty()) {
@@ -427,15 +427,17 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
                 match parse_type_hinted_column_name(aliases_column_name, &schema_rows) {
                     TypedToken::FromTypeHint(type_hint) => {
                         let field_name = Ident::new(&type_hint.alias, expr.ident.span());
-                        let field_type = create_fn_argument_type(&type_hint.alias, &type_hint.column_type);
+                        let field_type =
+                            create_fn_argument_type(&type_hint.alias, &type_hint.column_type);
                         match type_hint.not_null {
                             0 => quote! { #field_name: Option<#field_type> },
                             _ => quote! { #field_name: #field_type },
                         }
-                    },
+                    }
                     TypedToken::FromSchemaRow(schema_row) => {
                         let field_name = Ident::new(&schema_row.column_name, expr.ident.span());
-                        let field_type = create_fn_argument_type(aliases_column_name, &schema_row.column_type);
+                        let field_type =
+                            create_fn_argument_type(aliases_column_name, &schema_row.column_type);
                         match (schema_row.pk, schema_row.not_null) {
                             (0, 0) => quote! { #field_name: Option<#field_type> },
                             _ => quote! { #field_name: #field_type },
@@ -452,13 +454,16 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
                     TypedToken::FromTypeHint(type_hint) => {
                         let field_name = Ident::new(&type_hint.alias, expr.ident.span());
                         create_binding_value(&type_hint.column_type, type_hint.not_null, field_name)
-                    },
+                    }
                     TypedToken::FromSchemaRow(schema_row) => {
                         let field_name = Ident::new(&schema_row.column_name, expr.ident.span());
-                        create_binding_value(&schema_row.column_type, schema_row.not_null, field_name)
+                        create_binding_value(
+                            &schema_row.column_type,
+                            schema_row.not_null,
+                            field_name,
+                        )
                     }
                 }
-
             })
             .collect::<Vec<TokenStream>>();
 
@@ -467,7 +472,10 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
         let outputs = output_column_names(db, expr)?;
         let pascal_case = snake_to_pascal_case(&ident);
 
-        let output_typed = outputs.iter().map(|output| parse_type_hinted_column_name(output, &schema_rows)).collect::<Vec<_>>();
+        let output_typed = outputs
+            .iter()
+            .map(|output| parse_type_hinted_column_name(output, &schema_rows))
+            .collect::<Vec<_>>();
 
         let struct_tokens = struct_tokens(expr.ident.span(), &pascal_case, &output_typed);
 
@@ -477,15 +485,15 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
 
             #[doc = #sql]
             #[allow(non_snake_case)]
-            pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) -> Result<Vec<#pascal_case>> {
+            pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) -> static_sqlite::Result<Vec<#pascal_case>> {
                 let rows: Vec<#pascal_case> = static_sqlite::query(db, #sql, vec![#(#params,)*]).await?;
                 Ok(rows)
             }
 
             #[doc = #sql]
             #[allow(non_snake_case)]
-            pub async fn #ident_stream(db: &static_sqlite::Sqlite, #(#fn_args),*) -> Result<impl futures::Stream<Item = Result<#pascal_case>>> {
-                 static_sqlite::iter(db, #sql, vec![#(#params,)*]).await
+            pub async fn #ident_stream(db: &static_sqlite::Sqlite, #(#fn_args),*) ->  static_sqlite::Result<impl futures::Stream<Item = static_sqlite::Result<#pascal_case>>> {
+                 static_sqlite::stream(db, #sql, vec![#(#params,)*]).await
             }
         })
     }
@@ -498,7 +506,11 @@ fn create_fn_argument_type(fieldname: &String, column_type: &str) -> TokenStream
         "INTEGER" => quote! { i64 },
         "REAL" | "DOUBLE" => quote! { f64 },
         "TEXT" => quote! { impl ToString },
-        _ => unimplemented!("type {:?} not supported for fn arg {:?}", column_type, fieldname),
+        _ => unimplemented!(
+            "type {:?} not supported for fn arg {:?}",
+            column_type,
+            fieldname
+        ),
     }
 }
 
@@ -535,7 +547,10 @@ struct TypeHintedToken {
 }
 
 #[derive(Debug, Clone)]
-enum TypedToken { FromTypeHint(TypeHintedToken), FromSchemaRow(SchemaRow) }
+enum TypedToken {
+    FromTypeHint(TypeHintedToken),
+    FromSchemaRow(SchemaRow),
+}
 
 /*
  * Parses a type hint and returns a TypedColumnOrParameter
@@ -609,7 +624,8 @@ fn structs_tokens(span: Span, schema: &Schema) -> Vec<TokenStream> {
         .iter()
         .map(|(table, cols)| {
             let ident = proc_macro2::Ident::new(&table, span);
-            let typed_tokens: Vec<TypedToken> = cols.iter()
+            let typed_tokens: Vec<TypedToken> = cols
+                .iter()
                 .map(|col| TypedToken::FromSchemaRow(col.clone()))
                 .collect();
             struct_tokens(span, &ident, &typed_tokens)
@@ -617,24 +633,28 @@ fn structs_tokens(span: Span, schema: &Schema) -> Vec<TokenStream> {
         .collect()
 }
 
-
 fn struct_tokens(span: Span, ident: &Ident, output_typed: &[TypedToken]) -> TokenStream {
     let struct_fields = output_typed.iter().map(|row| {
         let field_type = match row {
-            TypedToken::FromTypeHint(type_hint) => field_type_from_datatype_name(&type_hint.column_type),
+            TypedToken::FromTypeHint(type_hint) => {
+                field_type_from_datatype_name(&type_hint.column_type)
+            }
             TypedToken::FromSchemaRow(schema_row) => field_type(schema_row),
         };
         let name = match row {
             TypedToken::FromTypeHint(type_hint) => Ident::new(&type_hint.name, span),
             TypedToken::FromSchemaRow(schema_row) => Ident::new(&schema_row.column_name, span),
         };
-        let optional = match ( match row {
-            TypedToken::FromTypeHint(type_hint) => type_hint.not_null,
-            TypedToken::FromSchemaRow(schema_row) => schema_row.not_null,
-        }, match row {
-            TypedToken::FromTypeHint(_) => 0,
-            TypedToken::FromSchemaRow(schema_row) => schema_row.pk,
-        }) {
+        let optional = match (
+            match row {
+                TypedToken::FromTypeHint(type_hint) => type_hint.not_null,
+                TypedToken::FromSchemaRow(schema_row) => schema_row.not_null,
+            },
+            match row {
+                TypedToken::FromTypeHint(_) => 0,
+                TypedToken::FromSchemaRow(schema_row) => schema_row.pk,
+            },
+        ) {
             (0, 0) => true,
             (0, 1) | (1, 0) | (1, 1) => false,
             _ => unreachable!(),
@@ -646,14 +666,20 @@ fn struct_tokens(span: Span, ident: &Ident, output_typed: &[TypedToken]) -> Toke
         }
     });
     let match_stmt = output_typed.iter().map(|row| {
-        let name = Ident::new(match row {
-            TypedToken::FromTypeHint(type_hint) => &type_hint.name,
-            TypedToken::FromSchemaRow(schema_row) => &schema_row.column_name,
-        }, span);
-        let lit_str = LitStr::new(match row {
-            TypedToken::FromTypeHint(type_hint) => &type_hint.alias,
-            TypedToken::FromSchemaRow(schema_row) => &schema_row.column_name,
-        }, span);
+        let name = Ident::new(
+            match row {
+                TypedToken::FromTypeHint(type_hint) => &type_hint.name,
+                TypedToken::FromSchemaRow(schema_row) => &schema_row.column_name,
+            },
+            span,
+        );
+        let lit_str = LitStr::new(
+            match row {
+                TypedToken::FromTypeHint(type_hint) => &type_hint.alias,
+                TypedToken::FromSchemaRow(schema_row) => &schema_row.column_name,
+            },
+            span,
+        );
 
         quote! {
             #lit_str => row.#name = value.try_into()?
@@ -681,11 +707,9 @@ fn struct_tokens(span: Span, ident: &Ident, output_typed: &[TypedToken]) -> Toke
     tokens
 }
 
-
 fn field_type(row: &SchemaRow) -> TokenStream {
     field_type_from_datatype_name(&row.column_type)
 }
-
 
 fn field_type_from_datatype_name(datatype_name: &str) -> TokenStream {
     match datatype_name {

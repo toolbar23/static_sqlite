@@ -17,7 +17,6 @@ use std::{
 
 const SQLITE_ROW: i32 = static_sqlite_ffi::SQLITE_ROW as i32;
 const SQLITE_DONE: i32 = static_sqlite_ffi::SQLITE_DONE as i32;
-const SQLITE_NULL: i32 = static_sqlite_ffi::SQLITE_NULL as i32;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {

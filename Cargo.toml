@@ -9,7 +9,7 @@ static_sqlite_macros = { path = "static_sqlite_macros", version = "0.1.0" }
 static_sqlite_core = { path = "static_sqlite_core", version = "0.1.0" }
 static_sqlite_async = { path = "static_sqlite_async", version = "0.1.0" }
 futures = { version = "0.3" }
-
+anyhow = "1.0.97"
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "sync", "macros"] }
 trybuild = "1.0"

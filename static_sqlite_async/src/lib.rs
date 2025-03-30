@@ -125,11 +125,11 @@ pub async fn query<T: FromRow + Send + 'static>(
     conn.call(move |conn| conn.query(sql, &params)).await
 }
 
-pub async fn iter<T: FromRow + Send + 'static>(
+pub async fn stream<T: FromRow + Send + 'static>(
     conn: &Sqlite,
     sql: &'static str,
     params: Vec<Value>,
-) -> Result<impl Stream<Item = Result<T>>> {
+) -> Result<impl Stream<Item = static_sqlite_core::Result<T>>> {
     let (sender, receiver) = std::sync::mpsc::channel();
 
     conn.sender

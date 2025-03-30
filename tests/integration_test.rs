@@ -13,7 +13,7 @@ async fn option_type_works() -> Result<()> {
         let insert_row = r#"
             insert into Row (txt) values (:txt) returning *
         "#;
-    }
+    };
 
     let db = static_sqlite::open(":memory:").await?;
     let _k = migrate(&db).await?;
@@ -320,7 +320,7 @@ async fn parameters_that_are_not_in_the_schema_work() -> Result<()> {
 
 #[tokio::test]
 async fn example_friendshipworks() -> Result<()> {
-    use static_sqlite::{self, sql, Result};
+    use static_sqlite::{self, sql};
 
     sql! {
         let migrate = r#"
