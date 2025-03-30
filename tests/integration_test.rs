@@ -64,6 +64,46 @@ async fn stream_works() -> Result<()> {
 }
 
 #[tokio::test]
+async fn query_first_works() -> Result<()> {
+    sql! {
+        let migrate = r#"
+            create table Row (
+                id integer primary key autoincrement,
+                txt text NOT NULL
+            )
+        "#;
+
+        let insert_row = r#"
+            insert into Row (txt) values (:txt) returning *
+        "#;
+
+        let select_row = r#"
+            select * from Row where id = :id
+        "#;
+    }
+
+    let db = static_sqlite::open(":memory:").await?;
+    migrate(&db).await?;
+
+    insert_row(&db, "test1").await?.first_row()?;
+    insert_row(&db, "test2").await?.first_row()?;
+    insert_row(&db, "test3").await?.first_row()?;
+    insert_row(&db, "test4").await?.first_row()?;
+
+    match select_row_first(&db, 1).await? {
+        Some(row) => assert_eq!(row.txt, "test1"),
+        None => panic!("Row 1 not found"),
+    }
+
+    match select_row_first(&db, 2).await? {
+        Some(row) => assert_eq!(row.txt, "test2"),
+        None => panic!("Row 2 not found"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn it_works() -> Result<()> {
     sql! {
         let migrations = r#"

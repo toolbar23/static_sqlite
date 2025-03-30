@@ -125,6 +125,14 @@ pub async fn query<T: FromRow + Send + 'static>(
     conn.call(move |conn| conn.query(sql, &params)).await
 }
 
+pub async fn query_first<T: FromRow + Send + 'static>(
+    conn: &Sqlite,
+    sql: &'static str,
+    params: Vec<Value>,
+) -> Result<Option<T>> {
+    conn.call(move |conn| conn.query_first(sql, &params)).await
+}
+
 pub async fn stream<T: FromRow + Send + 'static>(
     conn: &Sqlite,
     sql: &'static str,

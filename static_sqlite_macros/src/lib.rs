@@ -469,6 +469,7 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
 
         let ident = &expr.ident;
         let ident_stream = Ident::new(&format!("{}_stream", ident), expr.ident.span());
+        let ident_first = Ident::new(&format!("{}_first", ident), expr.ident.span());
         let outputs = output_column_names(db, expr)?;
         let pascal_case = snake_to_pascal_case(&ident);
 
@@ -494,6 +495,13 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
             #[allow(non_snake_case)]
             pub async fn #ident_stream(db: &static_sqlite::Sqlite, #(#fn_args),*) ->  static_sqlite::Result<impl futures::Stream<Item = static_sqlite::Result<#pascal_case>>> {
                  static_sqlite::stream(db, #sql, vec![#(#params,)*]).await
+            }
+
+
+            #[doc = #sql]
+            #[allow(non_snake_case)]
+            pub async fn #ident_first(db: &static_sqlite::Sqlite, #(#fn_args),*) ->  static_sqlite::Result<Option<#pascal_case>> {
+                 static_sqlite::query_first(db, #sql, vec![#(#params,)*]).await
             }
         })
     }

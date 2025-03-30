@@ -21,6 +21,14 @@ pub fn query<T: FromRow + Send + 'static>(
     conn.query(sql, params)
 }
 
+pub fn query_first<T: FromRow + Send + 'static>(
+    conn: &Sqlite,
+    sql: &'static str,
+    params: &[Value],
+) -> Result<Option<T>> {
+    conn.query_first(sql, params)
+}
+
 pub fn rows(conn: &Sqlite, sql: &str, params: &[Value]) -> Result<Vec<Vec<(String, Value)>>> {
     conn.rows(sql, params)
 }

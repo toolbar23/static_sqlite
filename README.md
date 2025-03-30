@@ -48,6 +48,42 @@ async fn main() -> Result<()> {
 cargo add --git https://github.com/swlkr/static_sqlite
 ```
 
+
+# Example for First
+
+With Sqlite you often do small queries that just return on row. For this a fn with the postfix _first
+is automatically created.
+
+```
+    sql! {
+        let migrate = r#"
+            create table Row (
+                id integer primary key autoincrement,
+                txt text NOT NULL
+            )
+        "#;
+
+        let insert_row = r#"
+            insert into Row (txt) values (:txt) returning *
+        "#;
+
+        let select_row = r#"
+            select * from Row where id = :id
+        "#;
+    }
+
+    let db = static_sqlite::open(":memory:").await?;
+    migrate(&db).await?;
+
+    insert_row(&db, "test1").await?.first_row()?;
+    insert_row(&db, "test2").await?.first_row()?;
+
+    match select_row_first(&db, 1).await? {
+        Some(row) => assert_eq!(row.txt, "test1"),
+        None => panic!("Row 1 not found"),
+    }
+```
+
 # Example for Streams
 
 If you don't want to read the whole result set into memory, you can get the result

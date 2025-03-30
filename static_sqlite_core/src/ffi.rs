@@ -34,6 +34,8 @@ pub enum Error {
     ConnectionClosed,
     #[error("sqlite row not found")]
     RowNotFound,
+    #[error("sqlite returned too many rows in result")]
+    TooManyRowsInResult,
     #[error(transparent)]
     Utf8Error(#[from] Utf8Error),
 }
@@ -172,6 +174,21 @@ impl Sqlite {
             Self::finalize_statement(self.db, stmt)?;
 
             Ok(rows)
+        }
+    }
+
+    pub fn query_first<T: FromRow>(
+        &self,
+        sql: &'static str,
+        params: &[Value],
+    ) -> Result<Option<T>> {
+        match self.query(sql, params) {
+            Ok(rows) => Ok(match rows.len() {
+                0 => None,
+                1 => Some(rows.into_iter().nth(0).unwrap()),
+                _ => return Err(Error::RowNotFound),
+            }),
+            Err(e) => Err(e),
         }
     }
 
