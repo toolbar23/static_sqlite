@@ -1,5 +1,6 @@
+use futures::pin_mut;
+use futures::StreamExt;
 use static_sqlite::{sql, FirstRow, Result, Sqlite};
-
 #[tokio::test]
 async fn option_type_works() -> Result<()> {
     sql! {
@@ -20,6 +21,44 @@ async fn option_type_works() -> Result<()> {
     let row = insert_row(&db, txt).await?.first_row()?;
 
     assert_eq!(row.txt, Some("txt".into()));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn stream_works() -> Result<()> {
+    sql! {
+        let migrate = r#"
+            create table Row (
+                txt text
+            )
+        "#;
+
+        let insert_row = r#"
+            insert into Row (txt) values (:txt) returning *
+        "#;
+
+        let select_rows = r#"
+            select * from Row
+        "#;
+    }
+
+    let db = static_sqlite::open(":memory:").await?;
+    migrate(&db).await?;
+
+    insert_row(&db, Some("test1")).await?.first_row()?;
+    insert_row(&db, Some("test2")).await?.first_row()?;
+    insert_row(&db, Some("test3")).await?.first_row()?;
+    insert_row(&db, Some("test4")).await?.first_row()?;
+
+    let f = select_rows_stream(&db).await?;
+
+    pin_mut!(f);
+
+    assert_eq!(f.next().await.unwrap().unwrap().txt, Some("test1".into()));
+    assert_eq!(f.next().await.unwrap().unwrap().txt, Some("test2".into()));
+    assert_eq!(f.next().await.unwrap().unwrap().txt, Some("test3".into()));
+    assert_eq!(f.next().await.unwrap().unwrap().txt, Some("test4".into()));
 
     Ok(())
 }
@@ -118,7 +157,8 @@ async fn it_works() -> Result<()> {
         Some(2.0),
         Some(vec![0xFE, 0xED]),
     )
-    .await?.first_row()?;
+    .await?
+    .first_row()?;
 
     assert_eq!(
         row,
@@ -162,6 +202,7 @@ async fn readme_works() -> Result<()> {
             values (:name)
             returning *
         "#;
+
     }
 
     let db = static_sqlite::open(":memory:").await?;
@@ -257,24 +298,29 @@ async fn parameters_that_are_not_in_the_schema_work() -> Result<()> {
     let db = static_sqlite::open(":memory:").await?;
     let _ = migrate(&db).await?;
     let user1 = insert_user(&db, "user1").await?.first_row()?;
-    insert_post(&db, user1.id, "user 1 - post1").await?.first_row()?;
-    insert_post(&db, user1.id, "user 1 - post2").await?.first_row()?;
+    insert_post(&db, user1.id, "user 1 - post1")
+        .await?
+        .first_row()?;
+    insert_post(&db, user1.id, "user 1 - post2")
+        .await?
+        .first_row()?;
     let user2 = insert_user(&db, "user2").await?.first_row()?;
-    insert_post(&db, user2.id, "user 2 - post1").await?.first_row()?;
-    insert_post(&db, user2.id, "user 2 - post2").await?.first_row()?;
+    insert_post(&db, user2.id, "user 2 - post1")
+        .await?
+        .first_row()?;
+    insert_post(&db, user2.id, "user 2 - post2")
+        .await?
+        .first_row()?;
 
     let posts = select_posts(&db, 1, 2, "Hello", "sdd").await?;
     println!("{:?}", posts);
 
-
     Ok(())
 }
 
-
-
 #[tokio::test]
 async fn example_friendshipworks() -> Result<()> {
-    use static_sqlite::{sql, Result, self};
+    use static_sqlite::{self, sql, Result};
 
     sql! {
         let migrate = r#"
@@ -324,15 +370,12 @@ async fn example_friendshipworks() -> Result<()> {
     assert_eq!(friends.first().unwrap().friend2_name, "toolbar23");
 
     Ok(())
-
 }
 
-
-
 #[tokio::test]
-async fn duplicate_column_names_in_one_quer2y_work() -> Result<()> {
-sql! {
-    let migrate = r#"
+async fn duplicate_column_names_in_one_query_work() -> Result<()> {
+    sql! {
+        let migrate = r#"
         CREATE TABLE IF NOT EXISTS Identifiers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             entity_type INTEGER NOT NULL,
@@ -350,7 +393,7 @@ sql! {
         );
     "#;
 
-    let get_changes = r#"
+        let get_changes = r#"
         SELECT
             mc.id,
             mc.timestamp,
@@ -368,17 +411,15 @@ sql! {
         AND mc.timestamp > :since__INTEGER
         ORDER BY mc.timestamp ASC
     "#;
+    }
+
+    let db = static_sqlite::open(":memory:").await?;
+    let _ = migrate(&db).await?;
+    let changes = get_changes(&db, 1).await?;
+    println!("{:?}", changes);
+
+    Ok(())
 }
-
-let db = static_sqlite::open(":memory:").await?;
-let _ = migrate(&db).await?;
-let changes = get_changes(&db, 1).await?;
-println!("{:?}", changes);
-
-Ok(())
-}
-
-
 
 #[test]
 fn ui() {

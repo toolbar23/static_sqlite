@@ -1,8 +1,9 @@
 // Inspired by the incredible tokio-rusqlite crate
 // https://github.com/programatik29/tokio-rusqlite/blob/master/src/lib.rs
 
-use static_sqlite_core as core;
 use crossbeam_channel::Sender;
+pub use futures::Stream;
+use static_sqlite_core as core;
 use tokio::sync::oneshot;
 
 pub use static_sqlite_core::*;
@@ -33,9 +34,7 @@ impl Sqlite {
             return Ok(());
         }
 
-        result
-            .unwrap()
-            .map_err(|e| Error::Sqlite(e.to_string()))
+        result.unwrap().map_err(|e| Error::Sqlite(e.to_string()))
     }
 
     pub async fn call<F, R>(&self, function: F) -> Result<R>
@@ -124,6 +123,33 @@ pub async fn query<T: FromRow + Send + 'static>(
     params: Vec<Value>,
 ) -> Result<Vec<T>> {
     conn.call(move |conn| conn.query(sql, &params)).await
+}
+
+pub async fn iter<T: FromRow + Send + 'static>(
+    conn: &Sqlite,
+    sql: &'static str,
+    params: Vec<Value>,
+) -> Result<impl Stream<Item = Result<T>>> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+
+    conn.sender
+        .send(Message::Execute(Box::new(move |conn| {
+            let value = conn.iter(sql, &params).unwrap();
+
+            for item in value {
+                let res = sender.send(item);
+                if res.is_err() {
+                    break;
+                }
+            }
+        })))
+        .map_err(|_| Error::ConnectionClosed)?;
+
+    Ok(async_stream::stream! {
+        for item in receiver {
+            yield item;
+        }
+    })
 }
 
 pub async fn rows(

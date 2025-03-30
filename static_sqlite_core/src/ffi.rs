@@ -9,6 +9,7 @@ use static_sqlite_ffi::{
 
 use std::{
     ffi::{c_char, c_int, CStr, CString, NulError},
+    marker::PhantomData,
     num::TryFromIntError,
     ops::Deref,
     str::Utf8Error,
@@ -16,6 +17,7 @@ use std::{
 
 const SQLITE_ROW: i32 = static_sqlite_ffi::SQLITE_ROW as i32;
 const SQLITE_DONE: i32 = static_sqlite_ffi::SQLITE_DONE as i32;
+const SQLITE_NULL: i32 = static_sqlite_ffi::SQLITE_NULL as i32;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -160,25 +162,7 @@ impl Sqlite {
                         .to_string_lossy()
                         .into_owned();
 
-                    let value = match sqlite3_column_type(stmt, i) {
-                        1 => Value::Integer(sqlite3_column_int64(stmt, i)),
-                        2 => Value::Real(sqlite3_column_double(stmt, i)),
-                        3 => {
-                            let text =
-                                CStr::from_ptr(sqlite3_column_text(stmt, i) as *const c_char)
-                                    .to_string_lossy()
-                                    .into_owned();
-                            Value::Text(text)
-                        }
-                        4 => {
-                            let len = sqlite3_column_bytes(stmt, i) as usize;
-                            let ptr = sqlite3_column_text(stmt, i);
-                            let slice = std::slice::from_raw_parts(ptr, len);
-                            Value::Blob(slice.to_vec())
-                        }
-                        _ => Value::Null,
-                    };
-
+                    let value = Self::get_column_value(stmt, i)?;
                     values.push((name, value));
                 }
 
@@ -186,21 +170,82 @@ impl Sqlite {
                 rows.push(row);
             }
 
-            if sqlite3_finalize(stmt) != 0 {
-                let error = CStr::from_ptr(sqlite3_errmsg(self.db))
-                    .to_string_lossy()
-                    .into_owned();
-                if error.starts_with("UNIQUE constraint failed: ") {
-                    return Err(Error::UniqueConstraint(
-                        error.replace("UNIQUE constraint failed: ", ""),
-                    ));
-                } else {
-                    return Err(Error::Sqlite(error));
-                }
-            }
+            Self::finalize_statement(self.db, stmt)?;
 
             Ok(rows)
         }
+    }
+
+    unsafe fn get_column_value(stmt: *mut sqlite3_stmt, i: c_int) -> Result<Value> {
+        match sqlite3_column_type(stmt, i) {
+            x if x == static_sqlite_ffi::SQLITE_INTEGER as i32 => {
+                Ok(Value::Integer(sqlite3_column_int64(stmt, i)))
+            }
+            x if x == static_sqlite_ffi::SQLITE_FLOAT as i32 => {
+                Ok(Value::Real(sqlite3_column_double(stmt, i)))
+            }
+            x if x == static_sqlite_ffi::SQLITE_TEXT as i32 => {
+                let text_ptr = sqlite3_column_text(stmt, i) as *const c_char;
+                if text_ptr.is_null() {
+                    Ok(Value::Text(String::new()))
+                } else {
+                    let text = CStr::from_ptr(text_ptr).to_str()?.to_owned();
+                    Ok(Value::Text(text))
+                }
+            }
+            x if x == static_sqlite_ffi::SQLITE_BLOB as i32 => {
+                let len = sqlite3_column_bytes(stmt, i);
+                if len < 0 {
+                    return Err(Error::Sqlite(
+                        "SQLite returned negative length for BLOB column".into(),
+                    ));
+                }
+                let len = len as usize;
+                let ptr = static_sqlite_ffi::sqlite3_column_blob(stmt, i);
+                if ptr.is_null() {
+                    if len == 0 {
+                        Ok(Value::Blob(vec![]))
+                    } else {
+                        Err(Error::Sqlite("SQLite returned null pointer for non-empty BLOB column (likely out of memory)".into()))
+                    }
+                } else {
+                    let slice = std::slice::from_raw_parts(ptr as *const u8, len);
+                    Ok(Value::Blob(slice.to_vec()))
+                }
+            }
+            x if x == static_sqlite_ffi::SQLITE_NULL as i32 => Ok(Value::Null),
+            _ => Err(Error::Sqlite(format!(
+                "Unexpected column type {}",
+                sqlite3_column_type(stmt, i)
+            ))),
+        }
+    }
+
+    unsafe fn finalize_statement(db: *mut sqlite3, stmt: *mut sqlite3_stmt) -> Result<()> {
+        let rc = sqlite3_finalize(stmt);
+        if rc != static_sqlite_ffi::SQLITE_OK as i32 {
+            let error = CStr::from_ptr(sqlite3_errmsg(db))
+                .to_string_lossy()
+                .into_owned();
+            if error.starts_with("UNIQUE constraint failed: ") {
+                Err(Error::UniqueConstraint(
+                    error.replace("UNIQUE constraint failed: ", ""),
+                ))
+            } else {
+                Err(Error::Sqlite(error))
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn iter<'a, T: FromRow + 'a>(
+        &'a self,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<impl Iterator<Item = Result<T>> + 'a> {
+        let stmt = self.prepare(sql, params)?;
+        Ok(SqliteIterator::new(self, stmt))
     }
 
     pub fn rows(&self, sql: &str, params: &[Value]) -> Result<Vec<Vec<(String, Value)>>> {
@@ -216,43 +261,14 @@ impl Sqlite {
                         .to_string_lossy()
                         .into_owned();
 
-                    let value = match sqlite3_column_type(stmt, i) {
-                        1 => Value::Integer(sqlite3_column_int64(stmt, i)),
-                        2 => Value::Real(sqlite3_column_double(stmt, i)),
-                        3 => {
-                            let text =
-                                CStr::from_ptr(sqlite3_column_text(stmt, i) as *const c_char)
-                                    .to_string_lossy()
-                                    .into_owned();
-                            Value::Text(text)
-                        }
-                        4 => {
-                            let len = sqlite3_column_bytes(stmt, i) as usize;
-                            let ptr = sqlite3_column_text(stmt, i);
-                            let slice = std::slice::from_raw_parts(ptr, len);
-                            Value::Blob(slice.to_vec())
-                        }
-                        _ => Value::Null,
-                    };
-
+                    let value = Self::get_column_value(stmt, i)?;
                     values.push((name, value));
                 }
 
                 rows.push(values);
             }
 
-            if sqlite3_finalize(stmt) != 0 {
-                let error = CStr::from_ptr(sqlite3_errmsg(self.db))
-                    .to_string_lossy()
-                    .into_owned();
-                if error.starts_with("UNIQUE constraint failed: ") {
-                    return Err(Error::UniqueConstraint(
-                        error.replace("UNIQUE constraint failed: ", ""),
-                    ));
-                } else {
-                    return Err(Error::Sqlite(error));
-                }
-            }
+            Self::finalize_statement(self.db, stmt)?;
 
             Ok(rows)
         }
@@ -579,5 +595,90 @@ impl From<Vec<u8>> for Value {
 impl From<()> for Value {
     fn from(_value: ()) -> Self {
         Value::Null
+    }
+}
+
+#[derive(Debug)]
+pub struct SqliteIterator<'a, T: FromRow> {
+    db: &'a Sqlite,
+    stmt: *mut sqlite3_stmt,
+    finished: bool,
+    _marker: PhantomData<T>,
+}
+
+impl<'a, T: FromRow> SqliteIterator<'a, T> {
+    fn new(db: &'a Sqlite, stmt: *mut sqlite3_stmt) -> Self {
+        SqliteIterator {
+            db,
+            stmt,
+            finished: false,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a, T: FromRow> Iterator for SqliteIterator<'a, T> {
+    type Item = Result<T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        unsafe {
+            match sqlite3_step(self.stmt) {
+                SQLITE_ROW => {
+                    let column_count = sqlite3_column_count(self.stmt);
+                    let mut values: Vec<(String, Value)> = vec![];
+
+                    for i in 0..column_count {
+                        let name_ptr = sqlite3_column_name(self.stmt, i);
+                        let name = if name_ptr.is_null() {
+                            format!("column_{}", i)
+                        } else {
+                            match CStr::from_ptr(name_ptr).to_str() {
+                                Ok(s) => s.to_owned(),
+                                Err(e) => return Some(Err(e.into())),
+                            }
+                        };
+
+                        match Sqlite::get_column_value(self.stmt, i) {
+                            Ok(value) => values.push((name, value)),
+                            Err(e) => {
+                                self.finished = true;
+                                return Some(Err(e));
+                            }
+                        }
+                    }
+
+                    match T::from_row(values) {
+                        Ok(row) => Some(Ok(row)),
+                        Err(e) => {
+                            self.finished = true;
+                            Some(Err(e))
+                        }
+                    }
+                }
+                SQLITE_DONE => {
+                    self.finished = true;
+                    None
+                }
+                _ => {
+                    self.finished = true;
+                    let error = CStr::from_ptr(sqlite3_errmsg(self.db.db))
+                        .to_string_lossy()
+                        .into_owned();
+                    Some(Err(Error::Sqlite(error)))
+                }
+            }
+        }
+    }
+}
+
+impl<'a, T: FromRow> Drop for SqliteIterator<'a, T> {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = Sqlite::finalize_statement(self.db.db, self.stmt);
+        }
     }
 }

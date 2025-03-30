@@ -48,6 +48,47 @@ async fn main() -> Result<()> {
 cargo add --git https://github.com/swlkr/static_sqlite
 ```
 
+# Example for Streams
+
+If you don't want to read the whole result set into memory, you can get the result
+as a futures::Stream over items of the derived type. The fn with the postfix _stream is automatically
+created.
+
+```
+    sql! {
+        let migrate = r#"
+            create table Row (
+                txt text
+            )
+        "#;
+
+        let insert_row = r#"
+            insert into Row (txt) values (:txt) returning *
+        "#;
+
+        let select_rows = r#"
+            select * from Row
+        "#;
+    }
+
+    let db = static_sqlite::open(":memory:").await?;
+    migrate(&db).await?;
+
+    insert_row(&db, Some("test1")).await?.first_row()?;
+    insert_row(&db, Some("test2")).await?.first_row()?;
+    insert_row(&db, Some("test3")).await?.first_row()?;
+    insert_row(&db, Some("test4")).await?.first_row()?;
+
+    let f = select_rows_stream(&db).await?;
+
+    pin_mut!(f);
+
+    assert_eq!(f.next().await.unwrap().unwrap().txt, Some("test1".into()));
+    assert_eq!(f.next().await.unwrap().unwrap().txt, Some("test2".into()));
+    assert_eq!(f.next().await.unwrap().unwrap().txt, Some("test3".into()));
+    assert_eq!(f.next().await.unwrap().unwrap().txt, Some("test4".into()));
+
+```
 
 # Example with aliased columns and type-hints
 

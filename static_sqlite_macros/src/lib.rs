@@ -463,13 +463,13 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
             .collect::<Vec<TokenStream>>();
 
         let ident = &expr.ident;
+        let ident_stream = Ident::new(&format!("{}_stream", ident), expr.ident.span());
         let outputs = output_column_names(db, expr)?;
         let pascal_case = snake_to_pascal_case(&ident);
 
         let output_typed = outputs.iter().map(|output| parse_type_hinted_column_name(output, &schema_rows)).collect::<Vec<_>>();
 
         let struct_tokens = struct_tokens(expr.ident.span(), &pascal_case, &output_typed);
-
 
         let sql = &expr.sql;
         output.push(quote! {
@@ -480,6 +480,12 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
             pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) -> Result<Vec<#pascal_case>> {
                 let rows: Vec<#pascal_case> = static_sqlite::query(db, #sql, vec![#(#params,)*]).await?;
                 Ok(rows)
+            }
+
+            #[doc = #sql]
+            #[allow(non_snake_case)]
+            pub async fn #ident_stream(db: &static_sqlite::Sqlite, #(#fn_args),*) -> Result<impl futures::Stream<Item = Result<#pascal_case>>> {
+                 static_sqlite::iter(db, #sql, vec![#(#params,)*]).await
             }
         })
     }
