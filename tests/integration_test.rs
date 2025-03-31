@@ -256,6 +256,57 @@ async fn readme_works() -> Result<()> {
 }
 
 #[tokio::test]
+async fn transaction_works() -> Result<()> {
+    sql! {
+        let migrate = r#"
+            create table Item (
+                id integer primary key
+            );
+        "#;
+
+        let insert_item = r#"
+            insert into Item (id)
+            values (:id)
+            returning *
+        "#;
+
+        let get_item_first = r#"
+            select id from Item where id = :id
+        "#;
+
+    }
+    let db = static_sqlite::open(":memory:").await?;
+    let _ = migrate(&db).await?;
+
+    // being; insert; commmit
+    db.begin_transaction().await?;
+    insert_item(&db, 1).await?;
+    let item1 = get_item_first(&db, 1).await?;
+    assert_eq!(item1.is_some(), true);
+    db.commit_transaction().await?;
+
+    // begin; insert; rollback
+    db.begin_transaction().await?;
+
+    insert_item(&db, 2).await?;
+    let item2_in_transaction = get_item_first(&db, 2).await?;
+    assert_eq!(item2_in_transaction.is_some(), true);
+
+    db.rollback_transaction().await?;
+
+    let item2_after_rollback = get_item_first(&db, 2).await?;
+    assert_eq!(item2_after_rollback.is_some(), false);
+
+    // rollback without begin
+    match db.rollback_transaction().await {
+        Ok(_) => panic!("should fail because no transaction is in progress"),
+        Err(_) => (),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn crud_works() -> Result<()> {
     sql! {
         let migrate = r#"
@@ -282,8 +333,8 @@ async fn crud_works() -> Result<()> {
         let all_users = r#"
             select id, name from User
         "#;
-    }
 
+    }
     let db = static_sqlite::open(":memory:").await?;
     let _ = migrate(&db).await?;
     let user = insert_user(&db, "swlkr").await?.first_row()?;
