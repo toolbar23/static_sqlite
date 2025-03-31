@@ -395,6 +395,12 @@ fn migrate_fn(expr: &SqlExpr) -> TokenStream {
     }
 }
 
+enum FunctionType {
+    QueryVec,
+    QueryOption,
+    Stream,
+}
+
 fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<TokenStream>> {
     let mut output = vec![];
     for expr in exprs {
@@ -467,9 +473,15 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
             })
             .collect::<Vec<TokenStream>>();
 
+        let ident_type = if expr.ident.to_string().ends_with("_stream") {
+            FunctionType::Stream
+        } else if expr.ident.to_string().ends_with("_first") {
+            FunctionType::QueryOption
+        } else {
+            FunctionType::QueryVec
+        };
+
         let ident = &expr.ident;
-        let ident_stream = Ident::new(&format!("{}_stream", ident), expr.ident.span());
-        let ident_first = Ident::new(&format!("{}_first", ident), expr.ident.span());
         let outputs = output_column_names(db, expr)?;
         let pascal_case = snake_to_pascal_case(&ident);
 
@@ -481,28 +493,33 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
         let struct_tokens = struct_tokens(expr.ident.span(), &pascal_case, &output_typed);
 
         let sql = &expr.sql;
+
+        let fn_tokens = match ident_type {
+            FunctionType::QueryVec => quote! {
+                pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) -> static_sqlite::Result<Vec<#pascal_case>> {
+                    let rows: Vec<#pascal_case> = static_sqlite::query(db, #sql, vec![#(#params,)*]).await?;
+                    Ok(rows)
+                }
+            },
+            FunctionType::QueryOption => quote! {
+                pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) ->  static_sqlite::Result<Option<#pascal_case>> {
+                    static_sqlite::query_first(db, #sql, vec![#(#params,)*]).await
+               }
+
+
+            },
+            FunctionType::Stream => quote! {
+                pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) ->  static_sqlite::Result<impl futures::Stream<Item = static_sqlite::Result<#pascal_case>>> {
+                    static_sqlite::stream(db, #sql, vec![#(#params,)*]).await
+               }
+            },
+        };
+
         output.push(quote! {
             #struct_tokens
 
-            #[doc = #sql]
-            #[allow(non_snake_case)]
-            pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) -> static_sqlite::Result<Vec<#pascal_case>> {
-                let rows: Vec<#pascal_case> = static_sqlite::query(db, #sql, vec![#(#params,)*]).await?;
-                Ok(rows)
-            }
+            #fn_tokens
 
-            #[doc = #sql]
-            #[allow(non_snake_case)]
-            pub async fn #ident_stream(db: &static_sqlite::Sqlite, #(#fn_args),*) ->  static_sqlite::Result<impl futures::Stream<Item = static_sqlite::Result<#pascal_case>>> {
-                 static_sqlite::stream(db, #sql, vec![#(#params,)*]).await
-            }
-
-
-            #[doc = #sql]
-            #[allow(non_snake_case)]
-            pub async fn #ident_first(db: &static_sqlite::Sqlite, #(#fn_args),*) ->  static_sqlite::Result<Option<#pascal_case>> {
-                 static_sqlite::query_first(db, #sql, vec![#(#params,)*]).await
-            }
         })
     }
     Ok(output)

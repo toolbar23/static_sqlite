@@ -38,7 +38,7 @@ async fn stream_works() -> Result<()> {
             insert into Row (txt) values (:txt) returning *
         "#;
 
-        let select_rows = r#"
+        let select_rows_stream = r#"
             select * from Row
         "#;
     }
@@ -73,11 +73,11 @@ async fn query_first_works() -> Result<()> {
             )
         "#;
 
-        let insert_row = r#"
+        let insert_row_first = r#"
             insert into Row (txt) values (:txt) returning *
         "#;
 
-        let select_row = r#"
+        let select_row_first = r#"
             select * from Row where id = :id
         "#;
     }
@@ -85,10 +85,10 @@ async fn query_first_works() -> Result<()> {
     let db = static_sqlite::open(":memory:").await?;
     migrate(&db).await?;
 
-    insert_row(&db, "test1").await?.first_row()?;
-    insert_row(&db, "test2").await?.first_row()?;
-    insert_row(&db, "test3").await?.first_row()?;
-    insert_row(&db, "test4").await?.first_row()?;
+    assert_eq!(insert_row_first(&db, "test1").await?.unwrap().txt, "test1");
+    assert_eq!(insert_row_first(&db, "test2").await?.unwrap().txt, "test2");
+    assert_eq!(insert_row_first(&db, "test3").await?.unwrap().txt, "test3");
+    assert_eq!(insert_row_first(&db, "test4").await?.unwrap().txt, "test4");
 
     match select_row_first(&db, 1).await? {
         Some(row) => assert_eq!(row.txt, "test1"),
@@ -395,6 +395,8 @@ async fn example_friendshipworks() -> Result<()> {
                   AND Friendship.friend_id = u2.id
                   AND Friendship.id = :friendship_id__INTEGER
         "#;
+
+
     }
 
     let db = static_sqlite::open(":memory:").await?;

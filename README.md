@@ -51,10 +51,11 @@ cargo add --git https://github.com/swlkr/static_sqlite
 
 # Example for First
 
-With Sqlite you often do small queries that just return on row. For this a fn with the postfix _first
-is automatically created.
+If the name of your statement ends with "_first", the created fn return an Option<T> with the first value instead of a Vec<T>.
 
-```
+I the query returns more than one rows, it throws an error.
+
+```rust
     sql! {
         let migrate = r#"
             create table Row (
@@ -86,12 +87,12 @@ is automatically created.
 
 # Example for Streams
 
-If you don't want to read the whole result set into memory, you can get the result
-as a futures::Stream over items of the derived type. The fn with the postfix _stream is automatically
-created.
+If the name of your statement ends with "_stream", the created fn return an async Stream<T> instead of a Vec<T>.
 
-```
-    sql! {
+This way you can iterate over large result sets.
+
+```rust
+sql! {
         let migrate = r#"
             create table Row (
                 txt text
@@ -102,7 +103,7 @@ created.
             insert into Row (txt) values (:txt) returning *
         "#;
 
-        let select_rows = r#"
+        let select_rows_stream = r#"
             select * from Row
         "#;
     }
@@ -123,6 +124,7 @@ created.
     assert_eq!(f.next().await.unwrap().unwrap().txt, Some("test2".into()));
     assert_eq!(f.next().await.unwrap().unwrap().txt, Some("test3".into()));
     assert_eq!(f.next().await.unwrap().unwrap().txt, Some("test4".into()));
+}
 
 ```
 
