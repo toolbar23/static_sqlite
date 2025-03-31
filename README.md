@@ -49,6 +49,25 @@ cargo add --git https://github.com/swlkr/static_sqlite
 ```
 
 
+# Example for Transactions
+
+Use the methods begin_transaction, commit_transaction and rollback_transaction to manage Sqlite transactions.
+
+
+```rust
+
+  // migration and sql-fn definition goes here
+
+  let db = static_sqlite::open(":memory:").await?;
+
+  migrate(&db).await?;
+
+  db.begin_transaction()?;
+  insert_row(&db, "test1").await?.first_row()?;
+  insert_row(&db, "test2").await?.first_row()?;
+  db.commit_transaction()?;
+```
+
 # Example for First
 
 If the name of your statement ends with "_first", the created fn return an Option<T> with the first value instead of a Vec<T>.
