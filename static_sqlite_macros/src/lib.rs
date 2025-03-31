@@ -473,7 +473,7 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
             })
             .collect::<Vec<TokenStream>>();
 
-        let ident_type = if expr.ident.to_string().ends_with("_stream") {
+        let fn_type = if expr.ident.to_string().ends_with("_stream") {
             FunctionType::Stream
         } else if expr.ident.to_string().ends_with("_first") {
             FunctionType::QueryOption
@@ -494,7 +494,7 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
 
         let sql = &expr.sql;
 
-        let fn_tokens = match ident_type {
+        let fn_tokens = match fn_type {
             FunctionType::QueryVec => quote! {
                 pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) -> static_sqlite::Result<Vec<#pascal_case>> {
                     let rows: Vec<#pascal_case> = static_sqlite::query(db, #sql, vec![#(#params,)*]).await?;
@@ -505,8 +505,6 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
                 pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) ->  static_sqlite::Result<Option<#pascal_case>> {
                     static_sqlite::query_first(db, #sql, vec![#(#params,)*]).await
                }
-
-
             },
             FunctionType::Stream => quote! {
                 pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) ->  static_sqlite::Result<impl futures::Stream<Item = static_sqlite::Result<#pascal_case>>> {
