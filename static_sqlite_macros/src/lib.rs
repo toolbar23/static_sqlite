@@ -496,17 +496,20 @@ fn fn_tokens(db: &Sqlite, schema: &Schema, exprs: &[&SqlExpr]) -> Result<Vec<Tok
 
         let fn_tokens = match fn_type {
             FunctionType::QueryVec => quote! {
+                #[allow(non_snake_case)]
                 pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) -> static_sqlite::Result<Vec<#pascal_case>> {
                     let rows: Vec<#pascal_case> = static_sqlite::query(db, #sql, vec![#(#params,)*]).await?;
                     Ok(rows)
                 }
             },
             FunctionType::QueryOption => quote! {
+                #[allow(non_snake_case)]
                 pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) ->  static_sqlite::Result<Option<#pascal_case>> {
                     static_sqlite::query_first(db, #sql, vec![#(#params,)*]).await
                }
             },
             FunctionType::Stream => quote! {
+                #[allow(non_snake_case)]
                 pub async fn #ident(db: &static_sqlite::Sqlite, #(#fn_args),*) ->  static_sqlite::Result<impl futures::Stream<Item = static_sqlite::Result<#pascal_case>>> {
                     static_sqlite::stream(db, #sql, vec![#(#params,)*]).await
                }
