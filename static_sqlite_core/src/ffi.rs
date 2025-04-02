@@ -207,7 +207,7 @@ impl Sqlite {
             Ok(rows) => Ok(match rows.len() {
                 0 => None,
                 1 => Some(rows.into_iter().nth(0).unwrap()),
-                _ => return Err(Error::RowNotFound),
+                _ => return Err(Error::TooManyRowsInResult),
             }),
             Err(e) => Err(e),
         }
