@@ -53,6 +53,18 @@ impl Sqlite {
 
         receiver.await.map_err(|_| Error::ConnectionClosed)?
     }
+
+    pub async fn begin_transaction(&self) -> Result<()> {
+        self.call(move |conn| conn.begin_transaction()).await
+    }
+
+    pub async fn commit_transaction(&self) -> Result<()> {
+        self.call(move |conn| conn.commit_transaction()).await
+    }
+
+    pub async fn rollback_transaction(&self) -> Result<()> {
+        self.call(move |conn| conn.rollback_transaction()).await
+    }
 }
 
 pub async fn open(path: impl ToString) -> Result<Sqlite> {

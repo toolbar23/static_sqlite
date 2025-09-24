@@ -150,6 +150,27 @@ impl Sqlite {
         self.execute(sql, vec![])
     }
 
+    pub fn begin_transaction(&self) -> Result<()> {
+        match self.execute("BEGIN TRANSACTION", vec![]) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn commit_transaction(&self) -> Result<()> {
+        match self.execute("COMMIT TRANSACTION", vec![]) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn rollback_transaction(&self) -> Result<()> {
+        match self.execute("ROLLBACK TRANSACTION", vec![]) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn query<T: FromRow>(&self, sql: &'static str, params: &[Value]) -> Result<Vec<T>> {
         unsafe {
             let stmt = self.prepare(sql, params)?;
